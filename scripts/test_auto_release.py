@@ -57,6 +57,35 @@ class PlanTests(unittest.TestCase):
                 patch.object(release, "git", return_value="sha"):
             self.assertEqual(release.successful_baseline(API(), "head"), "v0.3.28")
 
+    def test_fork_without_workflow_history_uses_its_newest_complete_release(self):
+        # A fork carries the upstream tags and releases, but the workflow runs
+        # that produced them belong to the parent repository, so every query
+        # returns nothing. The counter has to keep working there; otherwise the
+        # job fails before it counts a single line.
+        class API:
+            def releases(self):
+                return [published("v0.3.28"), published("v0.3.30")]
+
+            def latest_run(self, workflow, tag, head):
+                return None
+        with patch.object(release, "is_ancestor", return_value=True), \
+                patch.object(release, "git", return_value="sha"):
+            self.assertEqual(release.successful_baseline(API(), "head"), "v0.3.30")
+
+    def test_a_workflow_that_failed_still_rejects_the_tag(self):
+        # "No runs at all" means unattributable; "a run that failed" is evidence,
+        # and it must keep disqualifying the tag.
+        class API:
+            def releases(self):
+                return [published("v0.3.30")]
+
+            def latest_run(self, workflow, tag, head):
+                return run_info(1, conclusion="failure")
+        with patch.object(release, "is_ancestor", return_value=True), \
+                patch.object(release, "git", return_value="sha"):
+            with self.assertRaises(release.ReleaseError):
+                release.successful_baseline(API(), "head")
+
     def test_incomplete_or_draft_assets_are_not_a_successful_release(self):
         value = published("v0.3.31")
         self.assertTrue(release.has_assets(value))

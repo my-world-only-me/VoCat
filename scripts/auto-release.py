@@ -101,15 +101,43 @@ def has_assets(release):
 
 
 def successful_baseline(api, head):
-    candidates = [release for release in api.releases()
-                  if version(release["tag_name"]) is not None and has_assets(release)]
-    for release in sorted(candidates, key=lambda item: version(item["tag_name"]), reverse=True):
+    """Return the newest reachable stable tag to count changes from.
+
+    The tag's own release and both of its build workflows are the evidence that
+    the baseline is real, but a repository that is not the one that produced the
+    tags cannot have that evidence: a fork carries the upstream tags and their
+    releases, while the workflow runs that created them belong to the parent
+    repository. Requiring both workflows unconditionally made this job fail on
+    every fork before it counted a single line, which is how the automatic
+    release threshold came to be permanently red on this deployment.
+
+    So a tag is accepted when its workflows succeeded, and a tag with a complete
+    release is accepted when the workflows simply cannot be attributed to this
+    repository. What is never accepted is a tag with no complete release, because
+    that is the case the check exists for: an interrupted publish must not reset
+    the counter.
+    """
+    candidates = []
+    for release in api.releases():
         tag = release["tag_name"]
+        if version(tag) is None:
+            continue
+        candidates.append((tag, has_assets(release)))
+    for tag, complete in sorted(candidates, key=lambda item: version(item[0]), reverse=True):
         if not is_ancestor(tag, head):
+            continue
+        if not complete:
             continue
         sha = git("rev-parse", f"{tag}^{{commit}}")
         runs = [api.latest_run(workflow, tag, sha) for workflow in WORKFLOWS]
         if all(run and run["status"] == "completed" and run["conclusion"] == "success" for run in runs):
+            return tag
+        # A fork holds the upstream tags but not the runs that produced them: the
+        # workflow history belongs to the parent repository, so every query here
+        # returns nothing. Treat "no runs found at all" as unattributable rather
+        # than as failure; a run that exists but did not succeed still rejects
+        # the tag.
+        if all(run is None for run in runs):
             return tag
     raise ReleaseError("No reachable stable release has complete binaries and successful binary/container workflows")
 
