@@ -155,14 +155,13 @@ def make_plan(api, threshold=500):
     head = git("rev-parse", "HEAD")
     base = successful_baseline(api, head)
     additions, deletions = cumulative_changes(base, head)
-    # The workflow checks out with fetch-tags disabled, so the local tag list is
-    # empty until the tags are fetched, and the next release number is derived
-    # from the highest existing tag. The refspec is explicit because
-    # `fetch --tags origin` does not bring tags in when the remote is configured
-    # with a branch-only refspec, which is what actions/checkout leaves behind.
+    # The next number comes from the highest existing tag, so the local tag list
+    # has to be populated first: the workflow checks out with fetch-tags disabled.
+    # A repository that has never been tagged has nothing to fetch, which is not
+    # an error — it simply starts numbering from v0.0.1.
     subprocess.run(["git", "fetch", "--tags", "--force", "origin",
                     "+refs/tags/*:refs/tags/*"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                   capture_output=True, text=True, encoding="utf-8", check=False)
     tags = sorted((tag for tag in git("tag", "--list").splitlines() if version(tag) is not None),
                   key=version, reverse=True)
     # A baseline is normally a tag, but a repository that has never released
@@ -172,9 +171,10 @@ def make_plan(api, threshold=500):
     # code: fixes receive the next number after every existing stable tag.
     pending = next((tag for tag in tags if version(tag) > base_version and
                     git("rev-parse", f"{tag}^{{commit}}") == head), None)
-    if not tags:
-        raise ReleaseError("No version tag exists to number the next release from")
-    major, minor, patch = version(tags[0])
+    # No tag anywhere means this repository has never released. That is the state
+    # of a fork whose tags all live upstream, and it must not be fatal: the first
+    # release is v0.0.1 and the counter starts from the root commit.
+    major, minor, patch = version(tags[0]) if tags else (0, 0, 0)
     return {"head_sha": head, "base_tag": base, "next_tag": pending or f"v{major}.{minor}.{patch + 1}",
             "additions": additions, "deletions": deletions, "changed_lines": additions + deletions,
             "threshold": threshold, "should_release": additions + deletions >= threshold or pending is not None}

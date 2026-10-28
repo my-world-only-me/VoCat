@@ -101,6 +101,33 @@ class PlanTests(unittest.TestCase):
         with patch.object(release, "git", return_value="root-sha"):
             self.assertEqual(release.successful_baseline(API(), "head"), "root-sha")
 
+    def test_a_repository_with_no_tags_starts_numbering_at_v001(self):
+        # Not every fork carries the upstream tags: this one has none at all, so
+        # the local tag list is empty even after fetching. The first release is
+        # v0.0.1 rather than an error.
+        class API:
+            def releases(self):
+                return []
+
+            def latest_run(self, workflow, tag, head):
+                return None
+
+        def git(*args):
+            if args == ("rev-parse", "HEAD"):
+                return "fixed"
+            if args == ("tag", "--list"):
+                return ""
+            if args == ("rev-list", "--max-parents=0", "fixed"):
+                return "root-sha"
+            return ""
+
+        with patch.object(release, "git", side_effect=git), \
+                patch.object(release, "cumulative_changes", return_value=(600, 0)):
+            plan = release.make_plan(API())
+        self.assertEqual(plan["base_tag"], "root-sha")
+        self.assertEqual(plan["next_tag"], "v0.0.1")
+        self.assertTrue(plan["should_release"])
+
     def test_incomplete_or_draft_assets_are_not_a_successful_release(self):
         value = published("v0.3.31")
         self.assertTrue(release.has_assets(value))
