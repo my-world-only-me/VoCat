@@ -32,7 +32,9 @@ jobs:
           name: web-dist
           path: web/dist
           if-no-files-found: error
-          retention-days: 1
+          # Three days, the agreed figure across all three repositories. The
+          # binaries job in this same run collects it immediately.
+          retention-days: 3
 
   test:
     needs: web
@@ -129,7 +131,8 @@ jobs:
           name: binary-${{ matrix.target }}
           path: dist/${{ matrix.filename }}
           if-no-files-found: error
-          retention-days: 1
+          # Three days, the agreed figure across all three repositories.
+          retention-days: 3
 
   github-release:
     if: github.ref_type == 'tag'
