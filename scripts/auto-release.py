@@ -155,6 +155,11 @@ def make_plan(api, threshold=500):
     head = git("rev-parse", "HEAD")
     base = successful_baseline(api, head)
     additions, deletions = cumulative_changes(base, head)
+    # The workflow checks out with fetch-tags disabled, so the local tag list is
+    # empty until the tags are fetched. ensure_tag does this before creating a
+    # tag; the plan needs it too, because the next release number is derived from
+    # the highest existing tag.
+    git("fetch", "--tags", "origin")
     tags = sorted((tag for tag in git("tag", "--list").splitlines() if version(tag) is not None),
                   key=version, reverse=True)
     # A baseline is normally a tag, but a repository that has never released
