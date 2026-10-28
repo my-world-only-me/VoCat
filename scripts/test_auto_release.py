@@ -74,7 +74,10 @@ class PlanTests(unittest.TestCase):
 
     def test_a_workflow_that_failed_still_rejects_the_tag(self):
         # "No runs at all" means unattributable; "a run that failed" is evidence,
-        # and it must keep disqualifying the tag.
+        # and it must keep disqualifying the tag, so the refused tag must not be
+        # returned as the baseline. It falls through to the root commit rather
+        # than to the failed tag, which is what keeps an interrupted publish from
+        # resetting the counter.
         class API:
             def releases(self):
                 return [published("v0.3.30")]
@@ -82,9 +85,21 @@ class PlanTests(unittest.TestCase):
             def latest_run(self, workflow, tag, head):
                 return run_info(1, conclusion="failure")
         with patch.object(release, "is_ancestor", return_value=True), \
-                patch.object(release, "git", return_value="sha"):
-            with self.assertRaises(release.ReleaseError):
-                release.successful_baseline(API(), "head")
+                patch.object(release, "git", side_effect=lambda *a: "root-sha" if a == ("rev-list", "--max-parents=0", "head") else "sha"):
+            self.assertEqual(release.successful_baseline(API(), "head"), "root-sha")
+
+    def test_a_never_released_fork_counts_from_its_root_commit(self):
+        # A fresh fork has the upstream tags but no releases at all, so there is
+        # no baseline to find. Counting from the root commit keeps the threshold
+        # working instead of leaving the job permanently red.
+        class API:
+            def releases(self):
+                return []
+
+            def latest_run(self, workflow, tag, head):
+                return None
+        with patch.object(release, "git", return_value="root-sha"):
+            self.assertEqual(release.successful_baseline(API(), "head"), "root-sha")
 
     def test_incomplete_or_draft_assets_are_not_a_successful_release(self):
         value = published("v0.3.31")

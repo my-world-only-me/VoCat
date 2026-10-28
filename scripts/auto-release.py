@@ -103,19 +103,25 @@ def has_assets(release):
 def successful_baseline(api, head):
     """Return the newest reachable stable tag to count changes from.
 
-    The tag's own release and both of its build workflows are the evidence that
-    the baseline is real, but a repository that is not the one that produced the
-    tags cannot have that evidence: a fork carries the upstream tags and their
-    releases, while the workflow runs that created them belong to the parent
-    repository. Requiring both workflows unconditionally made this job fail on
-    every fork before it counted a single line, which is how the automatic
+    The tag's own release and both of its build workflows are the evidence that a
+    baseline is real. A repository that is not the one that produced the tags
+    cannot have all of that evidence — a fork carries the upstream tags, but the
+    workflow runs that created them belong to the parent repository — and a fresh
+    fork has no releases at all. Requiring the full evidence unconditionally made
+    this job fail before it counted a single line, which is how the automatic
     release threshold came to be permanently red on this deployment.
 
-    So a tag is accepted when its workflows succeeded, and a tag with a complete
-    release is accepted when the workflows simply cannot be attributed to this
-    repository. What is never accepted is a tag with no complete release, because
-    that is the case the check exists for: an interrupted publish must not reset
-    the counter.
+    So the rules are, in order:
+
+      * a tag whose two workflows succeeded is a baseline;
+      * a tag with a complete release, whose workflows simply cannot be found,
+        is a baseline — "no runs at all" means unattributable, not failed;
+      * when there is no such tag at all, the root commit is the baseline, so the
+        counter starts at the repository's own history instead of failing.
+
+    A tag with a run that exists but did not succeed is still rejected: an
+    interrupted publish must not reset the counter. That is what this check exists
+    to prevent.
     """
     candidates = []
     for release in api.releases():
@@ -132,14 +138,15 @@ def successful_baseline(api, head):
         runs = [api.latest_run(workflow, tag, sha) for workflow in WORKFLOWS]
         if all(run and run["status"] == "completed" and run["conclusion"] == "success" for run in runs):
             return tag
-        # A fork holds the upstream tags but not the runs that produced them: the
-        # workflow history belongs to the parent repository, so every query here
-        # returns nothing. Treat "no runs found at all" as unattributable rather
-        # than as failure; a run that exists but did not succeed still rejects
-        # the tag.
         if all(run is None for run in runs):
             return tag
-    raise ReleaseError("No reachable stable release has complete binaries and successful binary/container workflows")
+    # No usable tag anywhere: a fork that has never published. Counting from the
+    # root commit keeps the threshold meaningful instead of turning the job red
+    # forever, and make_plan still reads the newest tag for the next number.
+    root = git("rev-list", "--max-parents=0", head).splitlines()
+    if not root:
+        raise ReleaseError("No stable release and no root commit to count changes from")
+    return root[0]
 
 
 def make_plan(api, threshold=500):
@@ -150,10 +157,15 @@ def make_plan(api, threshold=500):
     additions, deletions = cumulative_changes(base, head)
     tags = sorted((tag for tag in git("tag", "--list").splitlines() if version(tag) is not None),
                   key=version, reverse=True)
+    # A baseline is normally a tag, but a repository that has never released
+    # counts from its root commit instead, and a sha has no version to compare.
+    base_version = version(base) if version(base) is not None else (0, 0, 0)
     # Retry an incomplete release at this exact commit. Never move a tag to new
     # code: fixes receive the next number after every existing stable tag.
-    pending = next((tag for tag in tags if version(tag) > version(base) and
+    pending = next((tag for tag in tags if version(tag) > base_version and
                     git("rev-parse", f"{tag}^{{commit}}") == head), None)
+    if not tags:
+        raise ReleaseError("No version tag exists to number the next release from")
     major, minor, patch = version(tags[0])
     return {"head_sha": head, "base_tag": base, "next_tag": pending or f"v{major}.{minor}.{patch + 1}",
             "additions": additions, "deletions": deletions, "changed_lines": additions + deletions,
